@@ -1,0 +1,159 @@
+WITH payments_rejected AS (
+		SELECT wallet_id,
+			SUM(amount_paid) AS rejeitados
+				FROM (
+			    SELECT *,
+			           ROW_NUMBER() OVER (PARTITION BY id ORDER BY created_at DESC) AS rn
+			    FROM prod_lake_ss_refined.payments
+			) t
+			WHERE state = 'rejected'
+				AND t.rn = 1
+			GROUP BY 1
+	),
+payments_scheduled AS (
+		SELECT wallet_id,
+			SUM(amount_paid) AS agendados
+				FROM (
+			    SELECT *,
+			           ROW_NUMBER() OVER (PARTITION BY id ORDER BY created_at DESC) AS rn
+			    FROM prod_lake_ss_refined.payments
+			) t
+			WHERE state = 'scheduled'
+				AND t.rn = 1
+			GROUP BY 1
+	),
+payments_payed AS (
+		SELECT wallet_id,
+				SUM(amount_paid) AS pagos
+			FROM (
+		    SELECT *,
+		           ROW_NUMBER() OVER (PARTITION BY id ORDER BY created_at DESC) AS rn
+		    FROM prod_lake_ss_refined.payments
+		) t
+		WHERE state = 'payed'
+		AND t.rn = 1
+		GROUP BY 1
+	),
+count_payed AS (
+		SELECT 
+			wallet_id,
+			COUNT(due_at) AS pagos
+			FROM prod_lake_ss_refined.payments
+			WHERE state = 'payed'
+				AND created_at >= DATE '2025-01-01'
+		     	AND created_at <  DATE '2025-02-01'
+			GROUP BY 1
+),
+count_rejected AS (
+		SELECT 
+			wallet_id,
+			COUNT(due_at) AS rejeitados
+			FROM prod_lake_ss_refined.payments
+			WHERE state = 'rejected'
+				AND created_at >= DATE '2025-01-01'
+		      	AND created_at <  DATE '2025-02-01'
+			GROUP BY 1
+),
+count_scheduled AS (
+		SELECT 
+			wallet_id,
+			COUNT(due_at) AS agendados
+			FROM prod_lake_ss_refined.payments
+			WHERE state = 'scheduled'
+				AND created_at >= DATE '2025-01-01'
+		      	AND created_at <  DATE '2025-02-01'
+			GROUP BY 1
+),
+acessos_por_pessoa AS (
+       SELECT 
+	        person_id,
+			COUNT(*) AS quantidade_acessos
+		    FROM prod_lake_ss_refined.accesses
+		    WHERE created_at >= DATE '2024-10-01'
+		      AND created_at <  DATE '2025-02-01'
+		    GROUP BY 1
+),
+guests_por_pessoa AS (
+	    SELECT 
+	        person_id,
+	        COUNT(*) AS total_guests
+		    FROM prod_lake_ss_refined.guests
+		    WHERE id IS NOT NULL
+				AND created_at >= DATE '2024-10-01'
+				AND created_at <  DATE '2025-02-01'
+		    GROUP BY person_id
+)
+
+SELECT 
+	MAX(pe.id) AS person_id,
+	MAX(p.id) AS purchase_id,
+	MAX(pe.name) AS name,
+	MAX (p.expired_at) AS expired_at,
+	MAX(m.end_at) AS cancelamento_matricula,
+	MAX(p.created_at) as purchase_created,
+    MAX(pe.email) AS email,
+    MAX(pe.document_cpf) AS document_cpf,
+    MAX(pc.brand) AS wallet_brand,
+    MAX(CASE 
+        WHEN (
+            SELECT COUNT(DISTINCT p2.id) 
+            FROM prod_lake_ss_refined.purchases p2 
+            WHERE p2.person_id = p.person_id
+              AND p2.id <> p.id
+              AND p2.created_at < p.created_at
+        ) = 0 THEN false
+        ELSE true
+    END) AS rebuy,
+    MAX (CASE 
+        WHEN pe.document_cpf = w.responsible_cpf THEN 'positivo' 
+        ELSE 'negativo'
+    END) AS documento_paymentmethod_wallet, 
+    MAX (CASE 
+        WHEN p.cancelled IS NULL THEN 'ativo'
+        ELSE 'cancelado'
+    END) AS cancelamento_purchase,
+	MAX (CASE 
+        WHEN pe.cached_status = 'active' THEN 'ativo'
+        ELSE 'inativo'
+    END) AS cached_status,
+	MAX (CASE
+		WHEN re.state = 'payed' THEN 'payed'
+		ELSE 'null'
+	END) AS abono,
+	MAX(re.amount_paid) AS abono_amount_paid,
+	a.quantidade_acessos,
+	g.total_guests,
+	p.kind,
+	pr.rejeitados AS rejected_amount_paid,
+	ps.agendados AS scheduled_amount_paid,
+	pp.pagos AS payed_amount_paid, 
+	cp.pagos AS count_payed,
+	cr.rejeitados AS count_rejected,
+	cs.agendados AS count_scheduled
+FROM prod_lake_ss_refined.purchases p 
+INNER JOIN prod_lake_ss_refined.locations l ON p.location_id = l.id
+INNER JOIN prod_lake_ss_refined.cities cy ON l.city_id = cy.id
+INNER JOIN prod_lake_ss_refined.states s ON cy.state_id = s.id
+INNER JOIN prod_lake_ss_refined.people pe ON pe.id = p.person_id
+LEFT JOIN prod_lake_ss_refined.wallets w ON w.person_id = pe.id
+LEFT JOIN prod_lake_ss_refined.memberships m ON p.id = m.purchase_id
+LEFT JOIN prod_lake_ss_refined.payment_companies pc ON pc.id = w.payment_company_id
+LEFT JOIN prod_lake_ss_refined.refunds re ON re.purchase_id = p.id
+LEFT JOIN payments_rejected pr ON pr.wallet_id = w.id
+LEFT JOIN payments_scheduled ps ON ps.wallet_id = w.id
+LEFT JOIN payments_payed pp ON pp.wallet_id = w.id
+LEFT JOIN acessos_por_pessoa a ON a.person_id = pe.id
+LEFT JOIN guests_por_pessoa g ON g.person_id = pe.id
+LEFT JOIN count_payed cp ON cp.wallet_id = w.id
+LEFT JOIN count_rejected cr ON cr.wallet_id = w.id
+LEFT JOIN count_scheduled cs ON cs.wallet_id = w.id
+WHERE 
+	p.created_at >= DATE '2025-01-01'
+	AND p.created_at <  DATE '2025-02-01'
+	AND LOWER(pe.name) NOT LIKE '%teste%'
+	AND pe.foreigner = FALSE
+	AND s.id = 14
+	AND p.plan_id IN (1,2,150)
+	AND pe.id IN (...10 mil person_ids)
+GROUP BY 16,17,18,19,20,21,22,23,24
+ORDER BY purchase_created asc
