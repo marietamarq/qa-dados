@@ -1,67 +1,58 @@
 WITH payments_rejected AS (
-		SELECT wallet_id,
-			SUM(amount_paid) AS rejeitados
-				FROM (
-			    SELECT *,
-			           ROW_NUMBER() OVER (PARTITION BY id ORDER BY created_at DESC) AS rn
-			    FROM prod_lake_ss_refined.payments
-			) t
-			WHERE state = 'rejected'
-				AND t.rn = 1
-			GROUP BY 1
-	),
+  SELECT w.person_id,
+         SUM(p.amount_paid) AS rejected_amount_paid
+  FROM prod_lake_ss_refined.payments p
+  LEFT JOIN prod_lake_ss_refined.wallets w ON w.id = p.wallet_id
+  WHERE p.state = 'rejected'
+  GROUP BY w.person_id
+),
 payments_scheduled AS (
-		SELECT wallet_id,
-			SUM(amount_paid) AS agendados
-				FROM (
-			    SELECT *,
-			           ROW_NUMBER() OVER (PARTITION BY id ORDER BY created_at DESC) AS rn
-			    FROM prod_lake_ss_refined.payments
-			) t
-			WHERE state = 'scheduled'
-				AND t.rn = 1
-			GROUP BY 1
-	),
+  SELECT w.person_id,
+         SUM(p.amount_paid) AS scheduled_amount_paid
+  FROM prod_lake_ss_refined.payments p
+  LEFT JOIN prod_lake_ss_refined.wallets w ON w.id = p.wallet_id
+  WHERE p.state = 'scheduled'
+  GROUP BY w.person_id
+),
 payments_payed AS (
-		SELECT wallet_id,
-				SUM(amount_paid) AS pagos
-			FROM (
-		    SELECT *,
-		           ROW_NUMBER() OVER (PARTITION BY id ORDER BY created_at DESC) AS rn
-		    FROM prod_lake_ss_refined.payments
-		) t
-		WHERE state = 'payed'
-		AND t.rn = 1
-		GROUP BY 1
-	),
+  SELECT w.person_id,
+         SUM(p.amount_paid) AS payed_amount_paid
+  FROM prod_lake_ss_refined.payments p
+  LEFT JOIN prod_lake_ss_refined.wallets w ON w.id = p.wallet_id
+  WHERE p.state = 'payed'
+  GROUP BY w.person_id
+),
 count_payed AS (
 		SELECT 
-			wallet_id,
+			w.person_id,
 			COUNT(due_at) AS pagos
-			FROM prod_lake_ss_refined.payments
-			WHERE state = 'payed'
-				AND created_at >= DATE '2025-01-01'
-		     	AND created_at <  DATE '2025-02-01'
+			FROM prod_lake_ss_refined.payments p
+  			LEFT JOIN prod_lake_ss_refined.wallets w ON w.id = p.wallet_id
+			WHERE p.state = 'payed'
+				AND p.created_at >= DATE '2025-01-01'
+		      	AND p.created_at <  DATE '2025-02-01'
 			GROUP BY 1
 ),
 count_rejected AS (
 		SELECT 
-			wallet_id,
+			w.person_id,
 			COUNT(due_at) AS rejeitados
-			FROM prod_lake_ss_refined.payments
-			WHERE state = 'rejected'
-				AND created_at >= DATE '2025-01-01'
-		      	AND created_at <  DATE '2025-02-01'
+			FROM prod_lake_ss_refined.payments p
+  			LEFT JOIN prod_lake_ss_refined.wallets w ON w.id = p.wallet_id
+			WHERE p.state = 'rejected'
+				AND p.created_at >= DATE '2025-01-01'
+		      	AND p.created_at <  DATE '2025-02-01'
 			GROUP BY 1
 ),
 count_scheduled AS (
 		SELECT 
-			wallet_id,
+			w.person_id,
 			COUNT(due_at) AS agendados
-			FROM prod_lake_ss_refined.payments
-			WHERE state = 'scheduled'
-				AND created_at >= DATE '2025-01-01'
-		      	AND created_at <  DATE '2025-02-01'
+			FROM prod_lake_ss_refined.payments p
+  			LEFT JOIN prod_lake_ss_refined.wallets w ON w.id = p.wallet_id
+			WHERE p.state = 'scheduled'
+				AND p.created_at >= DATE '2025-01-01'
+		      	AND p.created_at <  DATE '2025-02-01'
 			GROUP BY 1
 ),
 acessos_por_pessoa AS (
@@ -82,6 +73,20 @@ guests_por_pessoa AS (
 				AND created_at >= DATE '2024-10-01'
 				AND created_at <  DATE '2025-02-01'
 		    GROUP BY person_id
+),
+ranked_purchases AS (
+    SELECT 
+        p.*,
+        ROW_NUMBER() OVER (
+            PARTITION BY p.person_id 
+            ORDER BY p.created_at DESC, p.id DESC
+        ) AS rn
+    FROM prod_lake_ss_refined.purchases p
+),
+last_purchase AS (
+    SELECT *
+    FROM ranked_purchases
+    WHERE rn = 1
 )
 
 SELECT 
@@ -121,32 +126,36 @@ SELECT
 		ELSE 'null'
 	END) AS abono,
 	MAX(re.amount_paid) AS abono_amount_paid,
-	a.quantidade_acessos,
+	a.quantidade_acessos, --16
 	g.total_guests,
 	p.kind,
-	pr.rejeitados AS rejected_amount_paid,
-	ps.agendados AS scheduled_amount_paid,
-	pp.pagos AS payed_amount_paid, 
+	pr.rejected_amount_paid AS rejected_amount_paid,
+	ps.scheduled_amount_paid AS scheduled_amount_paid,
+	pp.payed_amount_paid AS payed_amount_paid,
 	cp.pagos AS count_payed,
 	cr.rejeitados AS count_rejected,
 	cs.agendados AS count_scheduled
-FROM prod_lake_ss_refined.purchases p 
-INNER JOIN prod_lake_ss_refined.locations l ON p.location_id = l.id
-INNER JOIN prod_lake_ss_refined.cities cy ON l.city_id = cy.id
-INNER JOIN prod_lake_ss_refined.states s ON cy.state_id = s.id
-INNER JOIN prod_lake_ss_refined.people pe ON pe.id = p.person_id
-LEFT JOIN prod_lake_ss_refined.wallets w ON w.person_id = pe.id
-LEFT JOIN prod_lake_ss_refined.memberships m ON p.id = m.purchase_id
-LEFT JOIN prod_lake_ss_refined.payment_companies pc ON pc.id = w.payment_company_id
-LEFT JOIN prod_lake_ss_refined.refunds re ON re.purchase_id = p.id
-LEFT JOIN payments_rejected pr ON pr.wallet_id = w.id
-LEFT JOIN payments_scheduled ps ON ps.wallet_id = w.id
-LEFT JOIN payments_payed pp ON pp.wallet_id = w.id
+FROM last_purchase p 
+LEFT JOIN prod_lake_ss_refined.locations 			l ON p.location_id = l.id
+LEFT JOIN prod_lake_ss_refined.cities    			cy ON l.city_id = cy.id
+LEFT JOIN prod_lake_ss_refined.states    			s ON cy.state_id = s.id
+LEFT JOIN prod_lake_ss_refined.people    			pe ON pe.id = p.person_id
+LEFT JOIN prod_lake_ss_refined.wallets   			w ON w.person_id = pe.id
+LEFT JOIN prod_lake_ss_refined.memberships 			m ON p.id = m.purchase_id
+LEFT JOIN prod_lake_ss_refined.payment_companies 	pc ON pc.id = w.payment_company_id
+LEFT JOIN (
+  SELECT purchase_id, MAX(state) AS state, SUM(amount_paid) AS amount_paid
+  FROM prod_lake_ss_refined.refunds
+  GROUP BY purchase_id
+) re ON re.purchase_id = p.id
 LEFT JOIN acessos_por_pessoa a ON a.person_id = pe.id
 LEFT JOIN guests_por_pessoa g ON g.person_id = pe.id
-LEFT JOIN count_payed cp ON cp.wallet_id = w.id
-LEFT JOIN count_rejected cr ON cr.wallet_id = w.id
-LEFT JOIN count_scheduled cs ON cs.wallet_id = w.id
+LEFT JOIN payments_rejected   pr ON pr.person_id = p.person_id
+LEFT JOIN payments_scheduled  ps ON ps.person_id = p.person_id
+LEFT JOIN payments_payed      pp ON pp.person_id = p.person_id
+LEFT JOIN count_payed         cp ON cp.person_id = p.person_id
+LEFT JOIN count_rejected      cr ON cr.person_id = p.person_id
+LEFT JOIN count_scheduled     cs ON cs.person_id = p.person_id
 WHERE 
 	p.created_at >= DATE '2025-01-01'
 	AND p.created_at <  DATE '2025-02-01'
@@ -154,6 +163,6 @@ WHERE
 	AND pe.foreigner = FALSE
 	AND s.id = 14
 	AND p.plan_id IN (1,2,150)
-	AND pe.id IN (...10 mil person_ids)
+	AND pe.id IN (48 mil person_ids...)
 GROUP BY 16,17,18,19,20,21,22,23,24
 ORDER BY purchase_created asc
